@@ -1,7 +1,7 @@
 #ifndef __EMA_TREND_PULLBACK_MARKET_DATA_MQH__
 #define __EMA_TREND_PULLBACK_MARKET_DATA_MQH__
 
-#include <EMA_Trend_Pullback/Types.mqh>
+#include <FCSousa/EMA_Trend_Pullback/Types.mqh>
 
 class CMarketData
 {

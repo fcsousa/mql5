@@ -3,13 +3,13 @@
 #property description "EA Trend Pullback: EMA40/80 regime + PB21/PB40 + Engolfo/123."
 #property description "Entrada stop, stop estrutural, target em R, risco percentual e filtros de custo/spread."
 
-#include <EMA_Trend_Pullback/Types.mqh>
-#include <EMA_Trend_Pullback/Logger.mqh>
-#include <EMA_Trend_Pullback/MarketData.mqh>
-#include <EMA_Trend_Pullback/Strategy.mqh>
-#include <EMA_Trend_Pullback/RiskManager.mqh>
-#include <EMA_Trend_Pullback/ExecutionManager.mqh>
-#include <EMA_Trend_Pullback/TradingSchedule.mqh>
+#include <FCSousa/EMA_Trend_Pullback/Types.mqh>
+#include <FCSousa/EMA_Trend_Pullback/Logger.mqh>
+#include <FCSousa/EMA_Trend_Pullback/MarketData.mqh>
+#include <FCSousa/EMA_Trend_Pullback/Strategy.mqh>
+#include <FCSousa/EMA_Trend_Pullback/RiskManager.mqh>
+#include <FCSousa/EMA_Trend_Pullback/ExecutionManager.mqh>
+#include <FCSousa/EMA_Trend_Pullback/TradingSchedule.mqh>
 
 //====================================================================
 // Indicadores
