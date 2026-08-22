@@ -1,0 +1,6 @@
+*.mq5 text eol=crlf
+*.mqh text eol=crlf
+*.set text eol=crlf
+*.ini text eol=crlf
+*.ps1 text eol=crlf
+*.md  text eol=lf
