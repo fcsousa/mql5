@@ -352,7 +352,7 @@ bool InitializeVisualIndicator(string &error)
    g_visual_indicator_handle = iCustom(
       _Symbol,
       PERIOD_CURRENT,
-      "EMA_21_40_80_Visual_v4_2",
+      "FCSousa\\EMA_21_40_80_Visual_v4_2",
       InpEMA21Period,
       InpEMA40Period,
       InpEMA80Period
