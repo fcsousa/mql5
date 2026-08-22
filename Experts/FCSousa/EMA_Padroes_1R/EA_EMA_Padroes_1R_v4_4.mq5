@@ -1,20 +1,20 @@
 //+------------------------------------------------------------------+
-//|                                  EA_EMA_Padroes_1R_v4_5.mq5       |
+//|                                  EA_EMA_Padroes_1R_v4_4.mq5       |
 //| EMA21/40/80 + 123, PFR ou Engolfo + risco percentual            |
-//| Versao 4.50: adiciona Trap opcional na EMA80 com prioridade sobre a EMA21    |
+//| Versao 4.40: adiciona filtro opcional de alinhamento com timeframe superior    |
 //+------------------------------------------------------------------+
 #property strict
-#property version   "4.50"
+#property version   "4.40"
 #property description "EA modular EMA21/40/80 com padroes 123, PFR e Engolfo completo."
-#property description "Inclui Trap EMA21 e Trap EMA80 opcional, com prioridade da EMA80, slope EMA40/ATR e Higher TF."
+#property description "Inclui filtros opcionais de slope EMA40/ATR e alinhamento EMA40/EMA80 em timeframe superior."
 
-#include <EMA_Padroes_1R/Types.mqh>
-#include <EMA_Padroes_1R/Logger.mqh>
-#include <EMA_Padroes_1R/MarketData.mqh>
-#include <EMA_Padroes_1R/Strategy.mqh>
-#include <EMA_Padroes_1R/RiskManager.mqh>
-#include <EMA_Padroes_1R/ExecutionManager.mqh>
-#include <EMA_Padroes_1R/TradingSchedule.mqh>
+#include <FCSousa/EMA_Padroes_1R/Types.mqh>
+#include <FCSousa/EMA_Padroes_1R/Logger.mqh>
+#include <FCSousa/EMA_Padroes_1R/MarketData.mqh>
+#include <FCSousa/EMA_Padroes_1R/Strategy.mqh>
+#include <FCSousa/EMA_Padroes_1R/RiskManager.mqh>
+#include <FCSousa/EMA_Padroes_1R/ExecutionManager.mqh>
+#include <FCSousa/EMA_Padroes_1R/TradingSchedule.mqh>
 
 //====================================================================
 // Indicadores
@@ -24,15 +24,6 @@ input int      InpEMA21Period       = 21;    // EMA de gatilho
 input int      InpEMA40Period       = 40;    // EMA de contexto intermediaria
 input int      InpEMA80Period       = 80;    // EMA de contexto longa
 input bool     InpShowEMAs          = true;  // Exibir EMAs no grafico
-
-//====================================================================
-// Tipos de entrada Trap
-// EMA21 preserva integralmente o gatilho existente da v4.4.
-// EMA80 usa Close[2] vs EMA80[2] e tem prioridade quando ambos ocorrem.
-//====================================================================
-input group "Tipos de entrada - Trap"
-input bool InpUseEMA21Trap = true;
-input bool InpUseEMA80Trap = false;
 
 //====================================================================
 // Filtro opcional de regime pela inclinacao da EMA40 normalizada por ATR
@@ -198,34 +189,6 @@ bool          g_has_active_context = false;
 int           g_visual_indicator_handle = INVALID_HANDLE;
 string        g_visual_indicator_short_name = "";
 
-//====================================================================
-// Estado do watchdog de spread de ordens pendentes
-//====================================================================
-const int MAX_SPREAD_DATA_INVALID_SECONDS = 10;
-
-datetime g_spread_data_invalid_since = 0;
-ulong    g_spread_data_invalid_order_ticket = 0;
-
-ulong g_pending_cancelled_spread_high = 0;
-ulong g_pending_cancelled_spread_data_timeout = 0;
-ulong g_spread_data_invalid_events = 0;
-ulong g_spread_data_recovered = 0;
-
-void ResetPendingSpreadInvalidState(void)
-  {
-   g_spread_data_invalid_since = 0;
-   g_spread_data_invalid_order_ticket = 0;
-  }
-
-datetime GetSpreadWatchdogTime(void)
-  {
-   datetime current_time = TimeTradeServer();
-   if(current_time <= 0)
-      current_time = TimeCurrent();
-
-   return current_time;
-  }
-
 // Retorna true somente no modo visual do Strategy Tester.
 bool IsTesterVisualMode(void)
   {
@@ -272,12 +235,6 @@ bool ValidateInputs(void)
       InpEMA80Period <= InpEMA40Period)
      {
       Print("Periodos invalidos: use EMA21 > 0, EMA40 > EMA21 e EMA80 > EMA40.");
-      return false;
-     }
-
-   if(!InpUseEMA21Trap && !InpUseEMA80Trap)
-     {
-      Print("Habilite pelo menos um tipo de entrada: Trap EMA21 ou Trap EMA80.");
       return false;
      }
 
@@ -790,11 +747,10 @@ bool EvaluateEMASlopeRegime(const MarketSnapshot &snapshot,
      }
 
    detail = StringFormat(
-      "pattern=%s direction=%s trap=%s EMA40_now=%s EMA40_past=%s ATR=%s "
+      "pattern=%s direction=%s EMA40_now=%s EMA40_past=%s ATR=%s "
       "lookback=%d slope=%s minimum_slope=%.8f motivo=%s",
       signal.pattern_name,
       DirectionToString(signal.direction),
-      signal.entry_trap_name,
       FormatAuditValue(ema_40_now, _Digits, ema_40_now_valid),
       FormatAuditValue(ema_40_past, _Digits, has_ema_40_past),
       FormatAuditValue(atr, _Digits, atr_valid),
@@ -823,11 +779,10 @@ bool EvaluateHigherTFAlignment(const TechnicalSignal &signal,
    if(!g_market_data.LoadHigherTFEMAValues(ema_40_htf, ema_80_htf, data_error))
      {
       detail = StringFormat(
-         "pattern=%s direction=%s trap=%s higher_tf=%s ema40_htf=INVALID ema80_htf=INVALID "
+         "pattern=%s direction=%s higher_tf=%s ema40_htf=INVALID ema80_htf=INVALID "
          "reason=HIGHER_TF_REJECT detail=%s",
          signal.pattern_name,
          DirectionToString(signal.direction),
-         signal.entry_trap_name,
          EnumToString(InpHigherTF),
          data_error
       );
@@ -841,10 +796,9 @@ bool EvaluateHigherTFAlignment(const TechnicalSignal &signal,
       accepted = ema_40_htf < ema_80_htf;
 
    detail = StringFormat(
-      "pattern=%s direction=%s trap=%s higher_tf=%s ema40_htf=%s ema80_htf=%s reason=%s",
+      "pattern=%s direction=%s higher_tf=%s ema40_htf=%s ema80_htf=%s reason=%s",
       signal.pattern_name,
       DirectionToString(signal.direction),
-      signal.entry_trap_name,
       EnumToString(InpHigherTF),
       DoubleToString(ema_40_htf, _Digits),
       DoubleToString(ema_80_htf, _Digits),
@@ -936,13 +890,12 @@ void LogAuditSnapshot(const string event_name,
       _Symbol,
       g_trade_audit.signal_id,
       StringFormat(
-         "padrao=%s direcao=%s trap=%s spread_sinal=%.2f spread_envio=%.2f spread_max_pendente=%.2f "
+         "padrao=%s direcao=%s spread_sinal=%.2f spread_envio=%.2f spread_max_pendente=%.2f "
          "technical_entry=%.*f normalized_entry=%.*f requested_price=%.*f executed_price=%.*f "
          "slippage=%.2fpts stop=%.2fpts custo_estimado=%.2f custo_realizado=%.2f "
          "risco_planejado=%.2f risco_real=%.2f cancel=%s detalhe=%s",
          g_trade_audit.pattern_name,
          DirectionToString(g_trade_audit.direction),
-         g_trade_audit.entry_trap_name,
          g_trade_audit.spread_signal_points,
          g_trade_audit.spread_send_points,
          g_trade_audit.spread_max_pending_points,
@@ -1012,15 +965,9 @@ bool CancelPendingWithReason(const ENUM_EA_CANCEL_REASON reason,
             CountRejection("WEEKEND", g_trade_audit.signal_id, detail, g_trade_audit.pattern_name, g_trade_audit.direction);
          else if(reason == CANCEL_SPREAD)
            {
-            // Timeout de dados e semanticamente diferente de spread alto.
-            // Nao contamina rejected_spread; possui auditoria dedicada.
-            if(StringFind(detail, "reason=SPREAD_DATA_TIMEOUT") >= 0)
-              {
-               // Contabilizado por ProcessPendingProtection.
-              }
             // Se o spread absoluto excedeu o maximo, a causa principal e
             // SPREAD. Caso contrario, a eliminacao veio da relacao stop/spread.
-            else if(StringFind(detail, "spread=") >= 0 &&
+            if(StringFind(detail, "spread=") >= 0 &&
                StringFind(detail, "stop/spread=") >= 0)
               {
                // O detalhe e produzido por ProcessPendingProtection. Usa a
@@ -1166,153 +1113,37 @@ void ProcessSafetyControls(const bool force_execution)
 void ProcessPendingProtection(void)
   {
    if(g_ea_state != EA_STATE_ORDER_PENDING)
-     {
-      ResetPendingSpreadInvalidState();
       return;
-     }
 
-   SpreadSnapshot spread = {};
-   g_execution_manager.GetSpreadSnapshot(spread);
+   double spread_price = 0.0;
+   double spread_points = 0.0;
+   string spread_error = "";
 
-   const ENUM_SPREAD_STATUS spread_status =
-      EvaluateSpreadStatus(spread, InpMaxSpreadPoints);
-
-   const string signal_id =
-      g_trade_audit.active ? g_trade_audit.signal_id : "";
-
-   if(spread_status == SPREAD_DATA_INVALID)
+   if(!g_execution_manager.GetCurrentSpread(
+         spread_price,
+         spread_points,
+         spread_error
+      ))
      {
-      const datetime now = GetSpreadWatchdogTime();
-      const ulong order_ticket = g_pending_order_ticket;
-
-      if(g_spread_data_invalid_since <= 0 ||
-         g_spread_data_invalid_order_ticket != order_ticket)
-        {
-         g_spread_data_invalid_since = now;
-         g_spread_data_invalid_order_ticket = order_ticket;
-         g_spread_data_invalid_events++;
-
-         g_logger.Warning(
-            "SPREAD_DATA_INVALID_STARTED",
-            _Symbol,
-            signal_id,
-            StringFormat(
-               "order=%I64u bid=%.*f ask=%.*f point=%.*f error=%u reason=%s",
-               order_ticket,
-               _Digits,
-               spread.bid,
-               _Digits,
-               spread.ask,
-               _Digits,
-               spread.point,
-               spread.error_code,
-               spread.reason
-            )
-         );
-        }
-
-      const long invalid_duration =
-         now > 0 && g_spread_data_invalid_since > 0
-         ? (long)(now - g_spread_data_invalid_since)
-         : 0;
-
-      if(invalid_duration < MAX_SPREAD_DATA_INVALID_SECONDS)
-         return;
-
-      const ulong cancelled_ticket = order_ticket;
-      const string timeout_signal_id = signal_id;
-
-      if(CancelPendingWithReason(
-            CANCEL_SPREAD,
-            StringFormat(
-               "reason=SPREAD_DATA_TIMEOUT invalid_duration=%I64d",
-               invalid_duration
-            )
-         ))
-        {
-         g_pending_cancelled_spread_data_timeout++;
-
-         g_logger.Warning(
-            "PENDING_CANCELLED",
-            _Symbol,
-            timeout_signal_id,
-            StringFormat(
-               "order=%I64u reason=SPREAD_DATA_TIMEOUT invalid_duration=%I64ds",
-               cancelled_ticket,
-               invalid_duration
-            )
-         );
-
-         ResetPendingSpreadInvalidState();
-        }
-
-      return;
-     }
-
-   if(g_spread_data_invalid_since > 0)
-     {
-      const datetime now = GetSpreadWatchdogTime();
-      const long invalid_duration =
-         now > 0 && g_spread_data_invalid_since > 0
-         ? (long)(now - g_spread_data_invalid_since)
-         : 0;
-
-      g_spread_data_recovered++;
-
-      g_logger.Info(
-         "SPREAD_DATA_RECOVERED",
+      g_logger.Warning(
+         "SPREAD_PROTECTION_ERROR",
          _Symbol,
-         signal_id,
-         StringFormat(
-            "order=%I64u invalid_duration=%I64ds spread=%.2fpts",
-            g_pending_order_ticket,
-            invalid_duration,
-            spread.spread_points
-         )
+         g_trade_audit.active ? g_trade_audit.signal_id : "",
+         spread_error
       );
-
-      ResetPendingSpreadInvalidState();
+      return;
      }
 
    if(g_trade_audit.active)
      {
       g_trade_audit.spread_max_pending_points = MathMax(
          g_trade_audit.spread_max_pending_points,
-         spread.spread_points
+         spread_points
       );
-     }
-
-   if(spread_status == SPREAD_TOO_HIGH)
-     {
-      const ulong rejected_ticket = g_pending_order_ticket;
-
-      g_logger.Warning(
-         "PENDING_SPREAD_REJECT",
-         _Symbol,
-         signal_id,
-         StringFormat(
-            "order=%I64u spread=%.2fpts max_spread=%.2fpts action=CANCEL",
-            rejected_ticket,
-            spread.spread_points,
-            InpMaxSpreadPoints
-         )
-      );
-
-      if(CancelPendingWithReason(
-            CANCEL_SPREAD,
-            StringFormat(
-               "spread=%.2fpts max=%.2fpts reason=SPREAD_TOO_HIGH",
-               spread.spread_points,
-               InpMaxSpreadPoints
-            )
-         ))
-         g_pending_cancelled_spread_high++;
-
-      return;
      }
 
    // Em caso de reinicio, o contexto detalhado pode nao estar em memoria.
-   // O fallback usa a mesma validacao centralizada. Spread zero e valido.
+   // O filtro legado ainda protege a ordem por spread como fallback.
    if(!g_has_active_context)
      {
       OperationResult fallback_result = {};
@@ -1321,7 +1152,7 @@ void ProcessPendingProtection(void)
          ))
         {
          g_logger.Warning(
-            "PENDING_SPREAD_REVALIDATION_ERROR",
+            "SPREAD_PROTECTION_ERROR",
             _Symbol,
             "",
             fallback_result.message
@@ -1343,21 +1174,23 @@ void ProcessPendingProtection(void)
    );
 
    const double current_stop_spread_ratio =
-      spread.spread_price > 0.0
-      ? risk_distance / spread.spread_price
-      : 1.0e100;
+      spread_price > 0.0 ? risk_distance / spread_price : 0.0;
+
+   const bool spread_above_maximum =
+      InpMaxSpreadPoints > 0.0 &&
+      spread_points > InpMaxSpreadPoints + 1e-9;
 
    const bool stop_spread_unsafe =
       InpMinStopSpreadMultiple > 0.0 &&
       current_stop_spread_ratio + 1e-9 < InpMinStopSpreadMultiple;
 
-   if(stop_spread_unsafe)
+   if(spread_above_maximum || stop_spread_unsafe)
      {
       CancelPendingWithReason(
          CANCEL_SPREAD,
          StringFormat(
             "spread=%.2fpts max=%.2fpts stop/spread=%.2fx minimo=%.2fx",
-            spread.spread_points,
+            spread_points,
             InpMaxSpreadPoints,
             current_stop_spread_ratio,
             InpMinStopSpreadMultiple
@@ -1366,6 +1199,8 @@ void ProcessPendingProtection(void)
       return;
      }
 
+   // Recalcula o peso dos custos com o spread corrente. O volume nao e
+   // aumentado; a ordem e cancelada quando os custos excedem a tolerancia.
    double cost_risk_percent = 0.0;
    double current_estimated_cost = 0.0;
    string risk_error = "";
@@ -1374,7 +1209,7 @@ void ProcessPendingProtection(void)
          _Symbol,
          g_active_prepared,
          g_active_risk.volume,
-         spread.spread_price,
+         spread_price,
          cost_risk_percent,
          current_estimated_cost,
          risk_error
@@ -1473,8 +1308,6 @@ int OnInit(void)
      }
 
    g_strategy.Configure(
-      InpUseEMA21Trap,
-      InpUseEMA80Trap,
       InpUse123,
       InpUsePFR,
       InpUseEngulfing,
@@ -1601,20 +1434,6 @@ void OnDeinit(const int reason)
    LogFunnelSummary("FUNNEL_SUMMARY_FINAL");
    LogPatternMetricsSummary("PATTERN_DIRECTION_SUMMARY_FINAL");
 
-   g_logger.Info(
-      "SPREAD_WATCHDOG_SUMMARY_FINAL",
-      _Symbol,
-      "",
-      StringFormat(
-         "pending_cancelled_spread_high=%I64u pending_cancelled_spread_data_timeout=%I64u "
-         "spread_data_invalid_events=%I64u spread_data_recovered=%I64u",
-         g_pending_cancelled_spread_high,
-         g_pending_cancelled_spread_data_timeout,
-         g_spread_data_invalid_events,
-         g_spread_data_recovered
-      )
-   );
-
    EventKillTimer();
    ReleaseVisualIndicator();
    g_market_data.Release();
@@ -1668,18 +1487,6 @@ void ProcessIdleState(void)
 
    g_last_processed_signal_id = signal.signal_id;
    CountSignalDetected(signal.signal_id, signal.pattern_name, signal.direction);
-
-   g_logger.Info(
-      "ENTRY_TRAP_SELECTED",
-      _Symbol,
-      signal.signal_id,
-      StringFormat(
-         "trap=%s pattern=%s direction=%s",
-         signal.entry_trap_name,
-         signal.pattern_name,
-         DirectionToString(signal.direction)
-      )
-   );
 
    // Filtro de regime atua depois do sinal tecnico ser contado e antes da
    // construcao do TradePlan. Nao altera entry, stop ou target.
@@ -1788,10 +1595,9 @@ void ProcessIdleState(void)
       _Symbol,
       plan.signal_id,
       StringFormat(
-         "direcao=%s padrao=%s trap=%s alvo=%.2fR spread_sinal=%.2fpts ATR=%.*f entrada_tecnica=%.*f stop_tecnico=%.*f",
+         "direcao=%s padrao=%s alvo=%.2fR spread_sinal=%.2fpts ATR=%.*f entrada_tecnica=%.*f stop_tecnico=%.*f",
          DirectionToString(plan.direction),
          plan.pattern_name,
-         signal.entry_trap_name,
          plan.target_r,
          plan.signal_spread_points,
          _Digits,
@@ -1802,35 +1608,6 @@ void ProcessIdleState(void)
          plan.technical_stop_price
       )
    );
-
-   // Nova ordem: dados de spread invalidos bloqueiam o envio imediatamente.
-   // Grace period existe somente para uma ordem que ja esta pendente.
-   SpreadSnapshot pre_send_spread = {};
-   g_execution_manager.GetSpreadSnapshot(pre_send_spread);
-
-   if(EvaluateSpreadStatus(pre_send_spread, InpMaxSpreadPoints) ==
-      SPREAD_DATA_INVALID)
-     {
-      g_spread_data_invalid_events++;
-
-      g_logger.Warning(
-         "ORDER_PREPARATION_REJECTED",
-         _Symbol,
-         plan.signal_id,
-         StringFormat(
-            "reason=SPREAD_DATA_INVALID bid=%.*f ask=%.*f point=%.*f error=%u detail=%s",
-            _Digits,
-            pre_send_spread.bid,
-            _Digits,
-            pre_send_spread.ask,
-            _Digits,
-            pre_send_spread.point,
-            pre_send_spread.error_code,
-            pre_send_spread.reason
-         )
-      );
-      return;
-     }
 
    PreparedOrder prepared = {};
    OperationResult preparation_result = {};
@@ -1914,7 +1691,6 @@ void ProcessIdleState(void)
    g_trade_audit.active                    = true;
    g_trade_audit.signal_id                 = plan.signal_id;
    g_trade_audit.pattern_name              = plan.pattern_name;
-   g_trade_audit.entry_trap_name           = signal.entry_trap_name;
    g_trade_audit.signal_time               = plan.signal_time;
    g_trade_audit.direction                 = plan.direction;
    g_trade_audit.volume_planned            = risk_result.volume;
@@ -2217,10 +1993,9 @@ void ProcessDealAudit(const MqlTradeTransaction &transaction)
          _Symbol,
          g_trade_audit.signal_id,
          StringFormat(
-            "bucket=%s trap=%s deal=%I64u volume=%.8f technical_entry=%.*f normalized_entry=%.*f "
+            "bucket=%s deal=%I64u volume=%.8f technical_entry=%.*f normalized_entry=%.*f "
             "requested_price=%.*f executed_price=%.*f spread_fill=%.2fpts slippage=%.2fpts custo_realizado_parcial=%.2f",
             PatternMetricLabel(GetPatternMetricIndex(g_trade_audit.pattern_name, g_trade_audit.direction)),
-            g_trade_audit.entry_trap_name,
             transaction.deal,
             deal_volume,
             _Digits,
@@ -2584,9 +2359,8 @@ void OnTradeTransaction(const MqlTradeTransaction &transaction,
          _Symbol,
          g_trade_audit.signal_id,
          StringFormat(
-            "bucket=%s trap=%s net_profit=%.2f",
+            "bucket=%s net_profit=%.2f",
             PatternMetricLabel(GetPatternMetricIndex(g_trade_audit.pattern_name, g_trade_audit.direction)),
-            g_trade_audit.entry_trap_name,
             g_trade_audit.trade_net_profit
          )
       );

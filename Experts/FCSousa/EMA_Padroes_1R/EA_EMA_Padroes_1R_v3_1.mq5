@@ -8,13 +8,13 @@
 #property description "EA modular EMA21/40/80 com padroes 123, PFR e Engolfo completo."
 #property description "Inclui prioridade de padroes, direcao, alvo em R, kill times, rollover, weekend e filtros de spread."
 
-#include <EMA_Padroes_1R/Types.mqh>
-#include <EMA_Padroes_1R/Logger.mqh>
-#include <EMA_Padroes_1R/MarketData.mqh>
-#include <EMA_Padroes_1R/Strategy.mqh>
-#include <EMA_Padroes_1R/RiskManager.mqh>
-#include <EMA_Padroes_1R/ExecutionManager.mqh>
-#include <EMA_Padroes_1R/TradingSchedule.mqh>
+#include <FCSousa/EMA_Padroes_1R/Types.mqh>
+#include <FCSousa/EMA_Padroes_1R/Logger.mqh>
+#include <FCSousa/EMA_Padroes_1R/MarketData.mqh>
+#include <FCSousa/EMA_Padroes_1R/Strategy.mqh>
+#include <FCSousa/EMA_Padroes_1R/RiskManager.mqh>
+#include <FCSousa/EMA_Padroes_1R/ExecutionManager.mqh>
+#include <FCSousa/EMA_Padroes_1R/TradingSchedule.mqh>
 
 //====================================================================
 // Indicadores

@@ -1,7 +1,7 @@
 #ifndef EMA_PADROES_1R_TRADING_SCHEDULE_MQH
 #define EMA_PADROES_1R_TRADING_SCHEDULE_MQH
 
-// Todos os horários desta classe usam o horário do servidor da corretora.
+// Todos os horÃ¡rios desta classe usam o horÃ¡rio do servidor da corretora.
 class CTradingSchedule
   {
 private:
@@ -43,7 +43,7 @@ private:
          );
         }
 
-      // Janela que cruza a meia-noite, por exemplo 23:30 até 00:30.
+      // Janela que cruza a meia-noite, por exemplo 23:30 atÃ© 00:30.
       return(
          current_minute >= start_minute ||
          current_minute <= end_minute

@@ -1,20 +1,20 @@
 //+------------------------------------------------------------------+
-//|                                  EA_EMA_Padroes_1R_v4_2.mq5       |
+//|                                  EA_EMA_Padroes_1R_v4_3.mq5       |
 //| EMA21/40/80 + 123, PFR ou Engolfo + risco percentual            |
-//| Versao 4.20: metricas por padrao/direcao e OnTester robusto    |
+//| Versao 4.30: filtro opcional de regime por slope EMA40/ATR    |
 //+------------------------------------------------------------------+
 #property strict
-#property version   "4.20"
+#property version   "4.30"
 #property description "EA modular EMA21/40/80 com padroes 123, PFR e Engolfo completo."
-#property description "Inclui risco total, auditoria por padrao/direcao e criterio OnTester de robustez."
+#property description "Inclui filtro opcional de regime por inclinacao EMA40 normalizada por ATR."
 
-#include <EMA_Padroes_1R/Types.mqh>
-#include <EMA_Padroes_1R/Logger.mqh>
-#include <EMA_Padroes_1R/MarketData.mqh>
-#include <EMA_Padroes_1R/Strategy.mqh>
-#include <EMA_Padroes_1R/RiskManager.mqh>
-#include <EMA_Padroes_1R/ExecutionManager.mqh>
-#include <EMA_Padroes_1R/TradingSchedule.mqh>
+#include <FCSousa/EMA_Padroes_1R/Types.mqh>
+#include <FCSousa/EMA_Padroes_1R/Logger.mqh>
+#include <FCSousa/EMA_Padroes_1R/MarketData.mqh>
+#include <FCSousa/EMA_Padroes_1R/Strategy.mqh>
+#include <FCSousa/EMA_Padroes_1R/RiskManager.mqh>
+#include <FCSousa/EMA_Padroes_1R/ExecutionManager.mqh>
+#include <FCSousa/EMA_Padroes_1R/TradingSchedule.mqh>
 
 //====================================================================
 // Indicadores
@@ -24,6 +24,15 @@ input int      InpEMA21Period       = 21;    // EMA de gatilho
 input int      InpEMA40Period       = 40;    // EMA de contexto intermediaria
 input int      InpEMA80Period       = 80;    // EMA de contexto longa
 input bool     InpShowEMAs          = true;  // Exibir EMAs no grafico
+
+//====================================================================
+// Filtro opcional de regime pela inclinacao da EMA40 normalizada por ATR
+// Usa somente candles fechados: EMA40[1], EMA40[1+lookback] e ATR[1].
+//====================================================================
+input group "Regime - slope EMA40/ATR"
+input bool   InpUseEMASlopeFilter  = false;
+input int    InpEMASlopeLookback   = 5;
+input double InpMinEMA40SlopeATR   = 0.0;
 
 //====================================================================
 // Formacoes e prioridade
@@ -221,6 +230,18 @@ bool ValidateInputs(void)
       return false;
      }
 
+   if(InpEMASlopeLookback <= 0)
+     {
+      Print("InpEMASlopeLookback deve ser maior que zero.");
+      return false;
+     }
+
+   if(InpMinEMA40SlopeATR < -0.10 || InpMinEMA40SlopeATR > 0.10)
+     {
+      Print("InpMinEMA40SlopeATR fora do intervalo valido [-0.10, 0.10]");
+      return false;
+     }
+     
    if(InpRiskPercent <= 0.0 || InpRiskPercent > 10.0)
      {
       Print("InpRiskPercent deve estar entre 0 e 10 por cento.");
@@ -498,7 +519,9 @@ void IncrementPatternRejection(const string pattern_name,
    if(index < 0)
       return;
 
-   if(counter_name == "COST_RISK")
+   if(counter_name == "REGIME")
+      g_pattern_metrics[index].rejected_regime++;
+   else if(counter_name == "COST_RISK")
       g_pattern_metrics[index].rejected_cost++;
    else if(counter_name == "SPREAD")
       g_pattern_metrics[index].rejected_spread++;
@@ -547,11 +570,12 @@ void LogPatternMetricsSummary(const string event_name)
          _Symbol,
          "",
          StringFormat(
-            "bucket=%s signals=%I64u rejected_cost=%I64u rejected_spread=%I64u "
-            "rejected_stop=%I64u pending_not_filled=%I64u executed=%I64u "
+            "bucket=%s signals=%I64u rejected_regime=%I64u rejected_cost=%I64u "
+            "rejected_spread=%I64u rejected_stop=%I64u pending_not_filled=%I64u executed=%I64u "
             "wins=%I64u losses=%I64u net_profit=%.2f",
             PatternMetricLabel(i),
             g_pattern_metrics[i].signals,
+            g_pattern_metrics[i].rejected_regime,
             g_pattern_metrics[i].rejected_cost,
             g_pattern_metrics[i].rejected_spread,
             g_pattern_metrics[i].rejected_stop,
@@ -572,10 +596,11 @@ void LogFunnelSummary(const string event_name)
       _Symbol,
       "",
       StringFormat(
-         "signals_detected=%I64u rejected_cost_risk=%I64u rejected_spread=%I64u "
-         "rejected_stop=%I64u rejected_kill_time=%I64u rejected_weekend=%I64u "
+         "signals_detected=%I64u rejected_regime=%I64u rejected_cost_risk=%I64u "
+         "rejected_spread=%I64u rejected_stop=%I64u rejected_kill_time=%I64u rejected_weekend=%I64u "
          "pending_not_filled=%I64u executed=%I64u",
          g_funnel.signals_detected,
+         g_funnel.rejected_regime,
          g_funnel.rejected_cost_risk,
          g_funnel.rejected_spread,
          g_funnel.rejected_stop,
@@ -607,7 +632,9 @@ void CountRejection(const string counter_name,
                     const string pattern_name,
                     const ENUM_SIGNAL_DIRECTION direction)
   {
-   if(counter_name == "COST_RISK")
+   if(counter_name == "REGIME")
+      g_funnel.rejected_regime++;
+   else if(counter_name == "COST_RISK")
       g_funnel.rejected_cost_risk++;
    else if(counter_name == "SPREAD")
       g_funnel.rejected_spread++;
@@ -620,7 +647,7 @@ void CountRejection(const string counter_name,
    else
       return;
 
-   // Metricas segmentadas solicitadas abrangem custos, spread e stop.
+   // Metricas segmentadas abrangem regime, custos, spread e stop.
    // Kill time/weekend permanecem no funil global, sem contaminar a leitura
    // de qualidade operacional de cada padrao/direcao.
    IncrementPatternRejection(pattern_name, direction, counter_name);
@@ -631,6 +658,95 @@ void CountRejection(const string counter_name,
       signal_id,
       StringFormat("cause=%s detalhe=%s", counter_name, detail)
    );
+  }
+
+string FormatAuditValue(const double value,
+                        const int digits,
+                        const bool is_valid)
+  {
+   if(!is_valid || !MathIsValidNumber(value))
+      return "INVALID";
+
+   return DoubleToString(value, digits);
+  }
+
+bool EvaluateEMASlopeRegime(const MarketSnapshot &snapshot,
+                            const TechnicalSignal &signal,
+                            string &detail)
+  {
+   if(!InpUseEMASlopeFilter)
+     {
+      detail = "";
+      return true;
+     }
+
+   const double ema_40_now = snapshot.ema_40_signal;
+   const double atr = snapshot.atr_signal;
+   double ema_40_past = 0.0;
+   double slope = 0.0;
+   bool has_ema_40_past = false;
+   bool has_slope = false;
+   string reason = "";
+
+   const bool ema_40_now_valid = MathIsValidNumber(ema_40_now);
+   const bool atr_valid = MathIsValidNumber(atr) && atr > 0.0;
+
+   if(!ema_40_now_valid)
+      reason = "EMA40_now invalida";
+   else if(!atr_valid)
+      reason = "ATR invalido ou menor/igual a zero";
+   else
+     {
+      string slope_data_error = "";
+      if(!g_market_data.LoadEMA40PastValue(
+            InpEMASlopeLookback,
+            ema_40_past,
+            slope_data_error
+         ))
+        {
+         reason = slope_data_error;
+        }
+      else
+        {
+         has_ema_40_past = true;
+         const double denominator = (double)InpEMASlopeLookback * atr;
+         if(denominator <= 0.0 || !MathIsValidNumber(denominator))
+            reason = "Denominador do slope invalido";
+         else
+           {
+            slope = (ema_40_now - ema_40_past) / denominator;
+            has_slope = MathIsValidNumber(slope);
+
+            if(!has_slope)
+               reason = "Slope EMA40/ATR invalido";
+            else if(signal.direction == SIGNAL_BUY &&
+                    slope < InpMinEMA40SlopeATR)
+               reason = "Slope abaixo do minimo para BUY";
+            else if(signal.direction == SIGNAL_SELL &&
+                    slope > -InpMinEMA40SlopeATR)
+               reason = "Slope acima do maximo simetrico para SELL";
+            else if(signal.direction != SIGNAL_BUY &&
+                    signal.direction != SIGNAL_SELL)
+               reason = "Direcao invalida no filtro de regime";
+           }
+        }
+     }
+
+   detail = StringFormat(
+      "pattern=%s direction=%s EMA40_now=%s EMA40_past=%s ATR=%s "
+      "lookback=%d slope=%s minimum_slope=%.8f motivo=%s",
+      signal.pattern_name,
+      DirectionToString(signal.direction),
+      FormatAuditValue(ema_40_now, _Digits, ema_40_now_valid),
+      FormatAuditValue(ema_40_past, _Digits, has_ema_40_past),
+      FormatAuditValue(atr, _Digits, atr_valid),
+      InpEMASlopeLookback,
+      FormatAuditValue(slope, 10, has_slope),
+      InpMinEMA40SlopeATR,
+      reason == "" ? "ACCEPTED" : reason
+   );
+
+   return reason == "";
   }
 
 bool IsCostRiskRejectionMessage(const string message)
@@ -1225,8 +1341,8 @@ int OnInit(void)
       "",
       StringFormat(
          "estado=%d magic=%I64u timeframe=%s alvo=%.2fR max_spread=%.2f stop_spread=%.2fx "
-         "min_stop_abs=%.2f ATR=%d x %.2f max_custo_risco=%.2f%% max_lote=%.2f "
-         "tolerancia_risco_real=%.2f%% watchdog=%ds",
+         "min_stop_abs=%.2f ATR=%d x %.2f slope_filter=%s slope_lookback=%d slope_min=%.8f "
+         "max_custo_risco=%.2f%% max_lote=%.2f tolerancia_risco_real=%.2f%% watchdog=%ds",
          (int)g_ea_state,
          InpMagicNumber,
          EnumToString((ENUM_TIMEFRAMES)_Period),
@@ -1236,6 +1352,9 @@ int OnInit(void)
          InpMinStopPointsAbsolute,
          InpATRPeriod,
          InpMinStopATRMultiple,
+         InpUseEMASlopeFilter ? "ON" : "OFF",
+         InpEMASlopeLookback,
+         InpMinEMA40SlopeATR,
          InpMaxRoundTripCostRiskPercent,
          InpMaxVolumeLots,
          InpMaxRealRiskOverPlanPercent,
@@ -1289,21 +1408,65 @@ void ProcessIdleState(void)
       return;
      }
 
-   TradePlan plan = {};
+   TechnicalSignal signal = {};
    string strategy_error = "";
 
-   if(!g_strategy.Evaluate(snapshot, plan, strategy_error))
+   if(!g_strategy.DetectSignal(snapshot, signal, strategy_error))
      {
       if(strategy_error != "")
          g_logger.Warning("SIGNAL_REJECTED", _Symbol, "", strategy_error);
       return;
      }
 
-   if(plan.signal_id == g_last_processed_signal_id)
+   if(signal.signal_id == g_last_processed_signal_id)
       return;
 
-   g_last_processed_signal_id = plan.signal_id;
-   CountSignalDetected(plan.signal_id, plan.pattern_name, plan.direction);
+   g_last_processed_signal_id = signal.signal_id;
+   CountSignalDetected(signal.signal_id, signal.pattern_name, signal.direction);
+
+   // Filtro de regime atua depois do sinal tecnico ser contado e antes da
+   // construcao do TradePlan. Nao altera entry, stop ou target.
+   string regime_detail = "";
+   if(!EvaluateEMASlopeRegime(snapshot, signal, regime_detail))
+     {
+      CountRejection(
+         "REGIME",
+         signal.signal_id,
+         regime_detail,
+         signal.pattern_name,
+         signal.direction
+      );
+      g_logger.Info(
+         "SIGNAL_REJECTED_REGIME",
+         _Symbol,
+         signal.signal_id,
+         regime_detail
+      );
+      return;
+     }
+
+   if(InpUseEMASlopeFilter)
+     {
+      g_logger.Info(
+         "REGIME_FILTER_PASSED",
+         _Symbol,
+         signal.signal_id,
+         regime_detail
+      );
+     }
+
+   TradePlan plan = {};
+   string plan_error = "";
+   if(!g_strategy.BuildTradePlan(snapshot, signal, plan, plan_error))
+     {
+      g_logger.Warning(
+         "SIGNAL_REJECTED",
+         _Symbol,
+         signal.signal_id,
+         plan_error
+      );
+      return;
+     }
 
    string schedule_reason = "";
    const datetime server_time = GetBrokerServerTime();

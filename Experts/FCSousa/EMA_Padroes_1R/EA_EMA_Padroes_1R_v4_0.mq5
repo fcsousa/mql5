@@ -1,20 +1,20 @@
 //+------------------------------------------------------------------+
-//|                                  EA_EMA_Padroes_1R_v4_1.mq5       |
+//|                                  EA_EMA_Padroes_1R_v4_0.mq5       |
 //| EMA21/40/80 + 123, PFR ou Engolfo + risco percentual            |
-//| Versao 4.10: funil quantitativo de sinais e rejeicoes    |
+//| Versao 4.00: risco total, custos, ATR, fill risk e auditoria    |
 //+------------------------------------------------------------------+
 #property strict
-#property version   "4.10"
+#property version   "4.00"
 #property description "EA modular EMA21/40/80 com padroes 123, PFR e Engolfo completo."
-#property description "Inclui risco total, TP em R liquido, auditoria e contadores quantitativos do funil de sinais."
+#property description "Inclui risco total com custos, TP em R liquido, ATR, controle pos-fill e auditoria detalhada."
 
-#include <EMA_Padroes_1R/Types.mqh>
-#include <EMA_Padroes_1R/Logger.mqh>
-#include <EMA_Padroes_1R/MarketData.mqh>
-#include <EMA_Padroes_1R/Strategy.mqh>
-#include <EMA_Padroes_1R/RiskManager.mqh>
-#include <EMA_Padroes_1R/ExecutionManager.mqh>
-#include <EMA_Padroes_1R/TradingSchedule.mqh>
+#include <FCSousa/EMA_Padroes_1R/Types.mqh>
+#include <FCSousa/EMA_Padroes_1R/Logger.mqh>
+#include <FCSousa/EMA_Padroes_1R/MarketData.mqh>
+#include <FCSousa/EMA_Padroes_1R/Strategy.mqh>
+#include <FCSousa/EMA_Padroes_1R/RiskManager.mqh>
+#include <FCSousa/EMA_Padroes_1R/ExecutionManager.mqh>
+#include <FCSousa/EMA_Padroes_1R/TradingSchedule.mqh>
 
 //====================================================================
 // Indicadores
@@ -155,7 +155,6 @@ string        g_last_processed_signal_id = "";
 PreparedOrder g_active_prepared = {};
 RiskResult    g_active_risk = {};
 TradeAudit    g_trade_audit = {};
-FunnelCounters g_funnel = {};
 bool          g_has_active_context = false;
 
 int           g_visual_indicator_handle = INVALID_HANDLE;
@@ -328,7 +327,7 @@ bool InitializeVisualIndicator(string &error)
    g_visual_indicator_handle = iCustom(
       _Symbol,
       PERIOD_CURRENT,
-      "EMA_21_40_80_Visual_v4_1",
+      "EMA_21_40_80_Visual_v4_0",
       InpEMA21Period,
       InpEMA40Period,
       InpEMA80Period
@@ -410,123 +409,6 @@ bool ReconcileState(void)
 //====================================================================
 // Auditoria e cancelamentos padronizados
 //====================================================================
-//====================================================================
-// Contadores quantitativos do funil
-//
-// Regras de contagem:
-// - cada signal_id unico incrementa signals_detected uma unica vez;
-// - rejected_* conta a causa que impediu aquele sinal de prosseguir;
-// - pending_not_filled e um resultado de ciclo de vida da ordem aceita e
-//   pode coexistir com a causa de cancelamento posterior (ex.: COST_RISK);
-// - executed incrementa somente no primeiro deal de entrada do signal_id,
-//   evitando dupla contagem em fills parciais.
-//====================================================================
-void LogFunnelSummary(const string event_name)
-  {
-   g_logger.Info(
-      event_name,
-      _Symbol,
-      "",
-      StringFormat(
-         "signals_detected=%I64u rejected_cost_risk=%I64u rejected_spread=%I64u "
-         "rejected_stop=%I64u rejected_kill_time=%I64u rejected_weekend=%I64u "
-         "pending_not_filled=%I64u executed=%I64u",
-         g_funnel.signals_detected,
-         g_funnel.rejected_cost_risk,
-         g_funnel.rejected_spread,
-         g_funnel.rejected_stop,
-         g_funnel.rejected_kill_time,
-         g_funnel.rejected_weekend,
-         g_funnel.pending_not_filled,
-         g_funnel.executed
-      )
-   );
-  }
-
-void CountSignalDetected(const string signal_id)
-  {
-   g_funnel.signals_detected++;
-   g_logger.Info(
-      "COUNTER_SIGNAL_DETECTED",
-      _Symbol,
-      signal_id,
-      StringFormat("signals_detected=%I64u", g_funnel.signals_detected)
-   );
-  }
-
-void CountRejection(const string counter_name,
-                    const string signal_id,
-                    const string detail)
-  {
-   if(counter_name == "COST_RISK")
-      g_funnel.rejected_cost_risk++;
-   else if(counter_name == "SPREAD")
-      g_funnel.rejected_spread++;
-   else if(counter_name == "STOP")
-      g_funnel.rejected_stop++;
-   else if(counter_name == "KILL_TIME")
-      g_funnel.rejected_kill_time++;
-   else if(counter_name == "WEEKEND")
-      g_funnel.rejected_weekend++;
-   else
-      return;
-
-   g_logger.Info(
-      "COUNTER_REJECTION",
-      _Symbol,
-      signal_id,
-      StringFormat("cause=%s detalhe=%s", counter_name, detail)
-   );
-  }
-
-bool IsCostRiskRejectionMessage(const string message)
-  {
-   return(
-      StringFind(message, "Custo round trip") >= 0 ||
-      StringFind(message, "Custo estimado") >= 0
-   );
-  }
-
-bool IsSpreadRejectionMessage(const string message)
-  {
-   return(
-      StringFind(message, "Spread elevado") >= 0 ||
-      StringFind(message, "Spread no envio elevado") >= 0 ||
-      StringFind(message, "Spread aumentou entre sizing e envio") >= 0
-   );
-  }
-
-bool IsStopRejectionMessage(const string message)
-  {
-   return(
-      StringFind(message, "Stop abaixo do minimo") >= 0 ||
-      StringFind(message, "Stop/spread inseguro") >= 0 ||
-      StringFind(message, "entrada/stop") >= 0 ||
-      StringFind(message, "Entrada ou stop preparados") >= 0
-   );
-  }
-
-void CountPendingNotFilledIfApplicable(const string detail)
-  {
-   if(!g_trade_audit.active ||
-      g_trade_audit.pending_not_filled_counted ||
-      g_trade_audit.volume_executed > 0.0)
-      return;
-
-   g_trade_audit.pending_not_filled_counted = true;
-   g_funnel.pending_not_filled++;
-   g_logger.Info(
-      "COUNTER_PENDING_NOT_FILLED",
-      _Symbol,
-      g_trade_audit.signal_id,
-      StringFormat(
-         "pending_not_filled=%I64u detalhe=%s",
-         g_funnel.pending_not_filled,
-         detail
-      )
-   );
-  }
-
 string CancelReasonToString(const ENUM_EA_CANCEL_REASON reason)
   {
    switch(reason)
@@ -615,57 +497,6 @@ bool CancelPendingWithReason(const ENUM_EA_CANCEL_REASON reason,
      {
       g_trade_audit.cancel_reason = reason;
       g_trade_audit.cancel_detail = detail;
-
-      // Uma ordem que chegou a ser aceita, mas terminou sem fill, entra no
-      // contador de pending_not_filled independentemente da causa final.
-      CountPendingNotFilledIfApplicable(detail);
-
-      // Rejeicoes durante a vida da ordem pendente tambem precisam manter
-      // a causa original do descarte. So contamos se ainda nao houve fill.
-      if(g_trade_audit.volume_executed <= 0.0)
-        {
-         if(reason == CANCEL_RISK && StringFind(detail, "custo/risco") >= 0)
-            CountRejection("COST_RISK", g_trade_audit.signal_id, detail);
-         else if(reason == CANCEL_KILL_TIME)
-            CountRejection("KILL_TIME", g_trade_audit.signal_id, detail);
-         else if(reason == CANCEL_WEEKEND)
-            CountRejection("WEEKEND", g_trade_audit.signal_id, detail);
-         else if(reason == CANCEL_SPREAD)
-           {
-            // Se o spread absoluto excedeu o maximo, a causa principal e
-            // SPREAD. Caso contrario, a eliminacao veio da relacao stop/spread.
-            if(StringFind(detail, "spread=") >= 0 &&
-               StringFind(detail, "stop/spread=") >= 0)
-              {
-               // O detalhe e produzido por ProcessPendingProtection. Usa a
-               // presenca de 'max=' e o valor corrente para manter prioridade
-               // causal no ponto de decisao. Como ambos podem falhar juntos,
-               // SPREAD tem prioridade quando excede o limite absoluto.
-               double current_spread = 0.0;
-               double current_spread_points = 0.0;
-               string current_spread_error = "";
-               if(g_execution_manager.GetCurrentSpread(
-                     current_spread,
-                     current_spread_points,
-                     current_spread_error
-                  ) &&
-                  InpMaxSpreadPoints > 0.0 &&
-                  current_spread_points > InpMaxSpreadPoints + 1e-9)
-                 {
-                  CountRejection("SPREAD", g_trade_audit.signal_id, detail);
-                 }
-               else
-                 {
-                  CountRejection("STOP", g_trade_audit.signal_id, detail);
-                 }
-              }
-            else
-              {
-               CountRejection("SPREAD", g_trade_audit.signal_id, detail);
-              }
-           }
-        }
-
       LogAuditSnapshot(CancelReasonToString(reason), detail);
      }
    else
@@ -1057,8 +888,6 @@ int OnInit(void)
       return INIT_FAILED;
      }
 
-   ZeroMemory(g_funnel);
-
    g_logger.Info(
       "EA_INITIALIZED",
       _Symbol,
@@ -1088,8 +917,6 @@ int OnInit(void)
 
 void OnDeinit(const int reason)
   {
-   LogFunnelSummary("FUNNEL_SUMMARY_FINAL");
-
    EventKillTimer();
    ReleaseVisualIndicator();
    g_market_data.Release();
@@ -1104,10 +931,18 @@ void OnDeinit(const int reason)
 
 void ProcessIdleState(void)
   {
-   // A estrategia e avaliada antes do filtro de horario para que o funil
-   // consiga medir sinais que EXISTIAM, mas foram rejeitados por kill time
-   // ou fim de semana. Isto nao altera a decisao operacional: nenhuma ordem
-   // e enviada enquanto o horario estiver bloqueado.
+   string schedule_reason = "";
+   if(g_trading_schedule.IsEntryBlocked(GetBrokerServerTime(), schedule_reason))
+     {
+      g_logger.Info(
+         "ENTRY_BLOCKED_BY_TIME",
+         _Symbol,
+         "",
+         schedule_reason
+      );
+      return;
+     }
+
    if(g_execution_manager.HasAnyTradingActivityForSymbol())
      {
       g_logger.Info(
@@ -1142,34 +977,6 @@ void ProcessIdleState(void)
       return;
 
    g_last_processed_signal_id = plan.signal_id;
-   CountSignalDetected(plan.signal_id);
-
-   string schedule_reason = "";
-   const datetime server_time = GetBrokerServerTime();
-
-   string weekend_reason = "";
-   if(g_trading_schedule.IsWeekendBlocked(server_time, weekend_reason))
-     {
-      CountRejection("WEEKEND", plan.signal_id, weekend_reason);
-      g_logger.Info("ENTRY_BLOCKED_BY_TIME", _Symbol, plan.signal_id, weekend_reason);
-      return;
-     }
-
-   string kill_reason = "";
-   if(g_trading_schedule.IsKillTime(server_time, kill_reason))
-     {
-      CountRejection("KILL_TIME", plan.signal_id, kill_reason);
-      g_logger.Info("ENTRY_BLOCKED_BY_TIME", _Symbol, plan.signal_id, kill_reason);
-      return;
-     }
-
-   // Rollover continua bloqueado, mas nao entra nos contadores solicitados.
-   if(g_trading_schedule.IsRolloverProtectionWindow(server_time))
-     {
-      schedule_reason = "Janela preventiva anterior ao rollover.";
-      g_logger.Info("ENTRY_BLOCKED_BY_TIME", _Symbol, plan.signal_id, schedule_reason);
-      return;
-     }
 
    g_logger.Info(
       "SIGNAL_CREATED",
@@ -1195,11 +1002,6 @@ void ProcessIdleState(void)
 
    if(!g_execution_manager.Prepare(plan, prepared, preparation_result))
      {
-      if(IsSpreadRejectionMessage(preparation_result.message))
-         CountRejection("SPREAD", plan.signal_id, preparation_result.message);
-      else if(IsStopRejectionMessage(preparation_result.message))
-         CountRejection("STOP", plan.signal_id, preparation_result.message);
-
       g_logger.Warning(
          "ORDER_PREPARATION_REJECTED",
          _Symbol,
@@ -1214,11 +1016,6 @@ void ProcessIdleState(void)
    OperationResult send_spread_result = {};
    if(!g_execution_manager.RefreshSendSpread(prepared, send_spread_result))
      {
-      if(IsSpreadRejectionMessage(send_spread_result.message))
-         CountRejection("SPREAD", plan.signal_id, send_spread_result.message);
-      else if(IsStopRejectionMessage(send_spread_result.message))
-         CountRejection("STOP", plan.signal_id, send_spread_result.message);
-
       g_logger.Warning(
          "ORDER_PREPARATION_REJECTED",
          _Symbol,
@@ -1236,9 +1033,6 @@ void ProcessIdleState(void)
          risk_result
       ))
      {
-      if(IsCostRiskRejectionMessage(risk_result.message))
-         CountRejection("COST_RISK", plan.signal_id, risk_result.message);
-
       g_logger.Warning(
          "RISK_REJECTED",
          _Symbol,
@@ -1288,8 +1082,6 @@ void ProcessIdleState(void)
    g_trade_audit.cancel_reason             = CANCEL_NONE;
    g_trade_audit.cancel_detail             = "";
    g_trade_audit.risk_control_attempted     = false;
-   g_trade_audit.execution_counted           = false;
-   g_trade_audit.pending_not_filled_counted  = false;
 
    ExecutionResult execution_result = {};
    if(!g_execution_manager.Submit(
@@ -1298,11 +1090,6 @@ void ProcessIdleState(void)
          execution_result
       ))
      {
-      if(IsSpreadRejectionMessage(execution_result.message))
-         CountRejection("SPREAD", plan.signal_id, execution_result.message);
-      else if(IsStopRejectionMessage(execution_result.message))
-         CountRejection("STOP", plan.signal_id, execution_result.message);
-
       g_logger.Error(
          "ORDER_REJECTED",
          _Symbol,
@@ -1388,7 +1175,6 @@ void ProcessNewBar(const datetime current_bar_time)
         {
          g_trade_audit.cancel_reason = CANCEL_EXPIRATION;
          g_trade_audit.cancel_detail = cancellation_result.message;
-         CountPendingNotFilledIfApplicable(cancellation_result.message);
          LogAuditSnapshot("CANCEL_EXPIRATION", cancellation_result.message);
          ResetActiveContext();
         }
@@ -1472,18 +1258,6 @@ void ProcessDealAudit(const MqlTradeTransaction &transaction)
 
    if(deal_entry == DEAL_ENTRY_IN || deal_entry == DEAL_ENTRY_INOUT)
      {
-      if(!g_trade_audit.execution_counted)
-        {
-         g_trade_audit.execution_counted = true;
-         g_funnel.executed++;
-         g_logger.Info(
-            "COUNTER_EXECUTED",
-            _Symbol,
-            g_trade_audit.signal_id,
-            StringFormat("executed=%I64u deal=%I64u", g_funnel.executed, transaction.deal)
-         );
-        }
-
       const double old_volume = g_trade_audit.volume_executed;
       const double new_volume = old_volume + deal_volume;
 

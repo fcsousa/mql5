@@ -1,7 +1,7 @@
 #ifndef EMA_PADROES_1R_STRATEGY_MQH
 #define EMA_PADROES_1R_STRATEGY_MQH
 
-#include <EMA_Padroes_1R/Types.mqh>
+#include <FCSousa/EMA_Padroes_1R/Types.mqh>
 
 // Strategy contem apenas regras tecnicas. Nao consulta margem e nao envia ordens.
 class CStrategy

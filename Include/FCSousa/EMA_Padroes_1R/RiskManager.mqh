@@ -1,7 +1,7 @@
 #ifndef EMA_PADROES_1R_RISK_MANAGER_MQH
 #define EMA_PADROES_1R_RISK_MANAGER_MQH
 
-#include <EMA_Padroes_1R/Types.mqh>
+#include <FCSousa/EMA_Padroes_1R/Types.mqh>
 
 //====================================================================
 // CRiskManager

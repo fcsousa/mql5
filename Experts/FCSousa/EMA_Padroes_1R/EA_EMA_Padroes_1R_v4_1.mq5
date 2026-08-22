@@ -1,20 +1,20 @@
 //+------------------------------------------------------------------+
-//|                                  EA_EMA_Padroes_1R_v4_3.mq5       |
+//|                                  EA_EMA_Padroes_1R_v4_1.mq5       |
 //| EMA21/40/80 + 123, PFR ou Engolfo + risco percentual            |
-//| Versao 4.30: filtro opcional de regime por slope EMA40/ATR    |
+//| Versao 4.10: funil quantitativo de sinais e rejeicoes    |
 //+------------------------------------------------------------------+
 #property strict
-#property version   "4.30"
+#property version   "4.10"
 #property description "EA modular EMA21/40/80 com padroes 123, PFR e Engolfo completo."
-#property description "Inclui filtro opcional de regime por inclinacao EMA40 normalizada por ATR."
+#property description "Inclui risco total, TP em R liquido, auditoria e contadores quantitativos do funil de sinais."
 
-#include <EMA_Padroes_1R/Types.mqh>
-#include <EMA_Padroes_1R/Logger.mqh>
-#include <EMA_Padroes_1R/MarketData.mqh>
-#include <EMA_Padroes_1R/Strategy.mqh>
-#include <EMA_Padroes_1R/RiskManager.mqh>
-#include <EMA_Padroes_1R/ExecutionManager.mqh>
-#include <EMA_Padroes_1R/TradingSchedule.mqh>
+#include <FCSousa/EMA_Padroes_1R/Types.mqh>
+#include <FCSousa/EMA_Padroes_1R/Logger.mqh>
+#include <FCSousa/EMA_Padroes_1R/MarketData.mqh>
+#include <FCSousa/EMA_Padroes_1R/Strategy.mqh>
+#include <FCSousa/EMA_Padroes_1R/RiskManager.mqh>
+#include <FCSousa/EMA_Padroes_1R/ExecutionManager.mqh>
+#include <FCSousa/EMA_Padroes_1R/TradingSchedule.mqh>
 
 //====================================================================
 // Indicadores
@@ -26,22 +26,13 @@ input int      InpEMA80Period       = 80;    // EMA de contexto longa
 input bool     InpShowEMAs          = true;  // Exibir EMAs no grafico
 
 //====================================================================
-// Filtro opcional de regime pela inclinacao da EMA40 normalizada por ATR
-// Usa somente candles fechados: EMA40[1], EMA40[1+lookback] e ATR[1].
-//====================================================================
-input group "Regime - slope EMA40/ATR"
-input bool   InpUseEMASlopeFilter  = false;
-input int    InpEMASlopeLookback   = 5;
-input double InpMinEMA40SlopeATR   = 0.0;
-
-//====================================================================
 // Formacoes e prioridade
 // Quando mais de um padrao ocorrer no mesmo candle, somente o primeiro
 // padrao valido da ordem abaixo sera usado para entrada, stop e log.
 //====================================================================
 input group "Formacoes e prioridade"
 input bool            InpUse123             = true;
-input bool            InpUsePFR             = false; // desativado por padrao; codigo preservado para testes isolados
+input bool            InpUsePFR             = true;
 input bool            InpUseEngulfing       = true;
 input ENUM_EA_PATTERN InpPatternPriority1   = EA_PATTERN_123;
 input ENUM_EA_PATTERN InpPatternPriority2   = EA_PATTERN_PFR;
@@ -145,16 +136,6 @@ input ulong InpDeviationPoints = 20;
 input bool  InpLogDetails      = true;
 input int   InpSafetyTimerSeconds = 10; // watchdog de horario/seguranca
 
-//====================================================================
-// Otimizacao / OnTester
-// Estes parametros NAO sao filtros tecnicos de entrada. Servem apenas para
-// classificar passes de otimizacao por robustez, evitando selecionar setups
-// por lucro bruto isolado.
-//====================================================================
-input group "Otimizacao - criterio de robustez"
-input int    InpOptimizationMinTrades          = 30;   // amostra minima aceitavel
-input double InpOptimizationMaxDrawdownPercent = 25.0; // acima disso recebe penalidade adicional
-
 CLogger           g_logger;
 CMarketData       g_market_data;
 CStrategy         g_strategy;
@@ -175,7 +156,6 @@ PreparedOrder g_active_prepared = {};
 RiskResult    g_active_risk = {};
 TradeAudit    g_trade_audit = {};
 FunnelCounters g_funnel = {};
-PatternDirectionMetrics g_pattern_metrics[6];
 bool          g_has_active_context = false;
 
 int           g_visual_indicator_handle = INVALID_HANDLE;
@@ -230,18 +210,6 @@ bool ValidateInputs(void)
       return false;
      }
 
-   if(InpEMASlopeLookback <= 0)
-     {
-      Print("InpEMASlopeLookback deve ser maior que zero.");
-      return false;
-     }
-
-   if(InpMinEMA40SlopeATR < -0.10 || InpMinEMA40SlopeATR > 0.10)
-     {
-      Print("InpMinEMA40SlopeATR fora do intervalo valido [-0.10, 0.10]");
-      return false;
-     }
-     
    if(InpRiskPercent <= 0.0 || InpRiskPercent > 10.0)
      {
       Print("InpRiskPercent deve estar entre 0 e 10 por cento.");
@@ -316,19 +284,6 @@ bool ValidateInputs(void)
       return false;
      }
 
-   if(InpOptimizationMinTrades < 0)
-     {
-      Print("InpOptimizationMinTrades nao pode ser negativo.");
-      return false;
-     }
-
-   if(InpOptimizationMaxDrawdownPercent < 0.0 ||
-      InpOptimizationMaxDrawdownPercent > 100.0)
-     {
-      Print("InpOptimizationMaxDrawdownPercent deve estar entre 0 e 100.");
-      return false;
-     }
-
    if(!IsValidHourMinute(InpKillTime1StartHour, InpKillTime1StartMinute) ||
       !IsValidHourMinute(InpKillTime1EndHour, InpKillTime1EndMinute) ||
       !IsValidHourMinute(InpKillTime2StartHour, InpKillTime2StartMinute) ||
@@ -373,7 +328,7 @@ bool InitializeVisualIndicator(string &error)
    g_visual_indicator_handle = iCustom(
       _Symbol,
       PERIOD_CURRENT,
-      "EMA_21_40_80_Visual_v4_2",
+      "EMA_21_40_80_Visual_v4_1",
       InpEMA21Period,
       InpEMA40Period,
       InpEMA80Period
@@ -466,129 +421,6 @@ bool ReconcileState(void)
 // - executed incrementa somente no primeiro deal de entrada do signal_id,
 //   evitando dupla contagem em fills parciais.
 //====================================================================
-// Indices fixos para manter relatorios deterministicos.
-#define METRIC_123_BUY      0
-#define METRIC_123_SELL     1
-#define METRIC_ENGULF_BUY   2
-#define METRIC_ENGULF_SELL  3
-#define METRIC_PFR_BUY      4
-#define METRIC_PFR_SELL     5
-
-int GetPatternMetricIndex(const string pattern_name,
-                          const ENUM_SIGNAL_DIRECTION direction)
-  {
-   if(pattern_name == "123")
-      return direction == SIGNAL_BUY ? METRIC_123_BUY : METRIC_123_SELL;
-
-   if(pattern_name == "ENG")
-      return direction == SIGNAL_BUY ? METRIC_ENGULF_BUY : METRIC_ENGULF_SELL;
-
-   if(pattern_name == "PFR")
-      return direction == SIGNAL_BUY ? METRIC_PFR_BUY : METRIC_PFR_SELL;
-
-   return -1;
-  }
-
-string PatternMetricLabel(const int index)
-  {
-   switch(index)
-     {
-      case METRIC_123_BUY:     return "123_BUY";
-      case METRIC_123_SELL:    return "123_SELL";
-      case METRIC_ENGULF_BUY:  return "ENGULF_BUY";
-      case METRIC_ENGULF_SELL: return "ENGULF_SELL";
-      case METRIC_PFR_BUY:     return "PFR_BUY";
-      case METRIC_PFR_SELL:    return "PFR_SELL";
-      default:                 return "UNKNOWN";
-     }
-  }
-
-void IncrementPatternSignal(const string pattern_name,
-                            const ENUM_SIGNAL_DIRECTION direction)
-  {
-   const int index = GetPatternMetricIndex(pattern_name, direction);
-   if(index >= 0)
-      g_pattern_metrics[index].signals++;
-  }
-
-void IncrementPatternRejection(const string pattern_name,
-                               const ENUM_SIGNAL_DIRECTION direction,
-                               const string counter_name)
-  {
-   const int index = GetPatternMetricIndex(pattern_name, direction);
-   if(index < 0)
-      return;
-
-   if(counter_name == "REGIME")
-      g_pattern_metrics[index].rejected_regime++;
-   else if(counter_name == "COST_RISK")
-      g_pattern_metrics[index].rejected_cost++;
-   else if(counter_name == "SPREAD")
-      g_pattern_metrics[index].rejected_spread++;
-   else if(counter_name == "STOP")
-      g_pattern_metrics[index].rejected_stop++;
-  }
-
-void IncrementPatternPendingNotFilled(const string pattern_name,
-                                      const ENUM_SIGNAL_DIRECTION direction)
-  {
-   const int index = GetPatternMetricIndex(pattern_name, direction);
-   if(index >= 0)
-      g_pattern_metrics[index].pending_not_filled++;
-  }
-
-void IncrementPatternExecuted(const string pattern_name,
-                              const ENUM_SIGNAL_DIRECTION direction)
-  {
-   const int index = GetPatternMetricIndex(pattern_name, direction);
-   if(index >= 0)
-      g_pattern_metrics[index].executed++;
-  }
-
-void FinalizePatternTradeResult(const string pattern_name,
-                                const ENUM_SIGNAL_DIRECTION direction,
-                                const double net_profit)
-  {
-   const int index = GetPatternMetricIndex(pattern_name, direction);
-   if(index < 0)
-      return;
-
-   g_pattern_metrics[index].net_profit += net_profit;
-
-   if(net_profit > 1e-8)
-      g_pattern_metrics[index].wins++;
-   else if(net_profit < -1e-8)
-      g_pattern_metrics[index].losses++;
-  }
-
-void LogPatternMetricsSummary(const string event_name)
-  {
-   for(int i = 0; i < 6; i++)
-     {
-      g_logger.Info(
-         event_name,
-         _Symbol,
-         "",
-         StringFormat(
-            "bucket=%s signals=%I64u rejected_regime=%I64u rejected_cost=%I64u "
-            "rejected_spread=%I64u rejected_stop=%I64u pending_not_filled=%I64u executed=%I64u "
-            "wins=%I64u losses=%I64u net_profit=%.2f",
-            PatternMetricLabel(i),
-            g_pattern_metrics[i].signals,
-            g_pattern_metrics[i].rejected_regime,
-            g_pattern_metrics[i].rejected_cost,
-            g_pattern_metrics[i].rejected_spread,
-            g_pattern_metrics[i].rejected_stop,
-            g_pattern_metrics[i].pending_not_filled,
-            g_pattern_metrics[i].executed,
-            g_pattern_metrics[i].wins,
-            g_pattern_metrics[i].losses,
-            g_pattern_metrics[i].net_profit
-         )
-      );
-     }
-  }
-
 void LogFunnelSummary(const string event_name)
   {
    g_logger.Info(
@@ -596,11 +428,10 @@ void LogFunnelSummary(const string event_name)
       _Symbol,
       "",
       StringFormat(
-         "signals_detected=%I64u rejected_regime=%I64u rejected_cost_risk=%I64u "
-         "rejected_spread=%I64u rejected_stop=%I64u rejected_kill_time=%I64u rejected_weekend=%I64u "
+         "signals_detected=%I64u rejected_cost_risk=%I64u rejected_spread=%I64u "
+         "rejected_stop=%I64u rejected_kill_time=%I64u rejected_weekend=%I64u "
          "pending_not_filled=%I64u executed=%I64u",
          g_funnel.signals_detected,
-         g_funnel.rejected_regime,
          g_funnel.rejected_cost_risk,
          g_funnel.rejected_spread,
          g_funnel.rejected_stop,
@@ -612,12 +443,9 @@ void LogFunnelSummary(const string event_name)
    );
   }
 
-void CountSignalDetected(const string signal_id,
-                         const string pattern_name,
-                         const ENUM_SIGNAL_DIRECTION direction)
+void CountSignalDetected(const string signal_id)
   {
    g_funnel.signals_detected++;
-   IncrementPatternSignal(pattern_name, direction);
    g_logger.Info(
       "COUNTER_SIGNAL_DETECTED",
       _Symbol,
@@ -628,13 +456,9 @@ void CountSignalDetected(const string signal_id,
 
 void CountRejection(const string counter_name,
                     const string signal_id,
-                    const string detail,
-                    const string pattern_name,
-                    const ENUM_SIGNAL_DIRECTION direction)
+                    const string detail)
   {
-   if(counter_name == "REGIME")
-      g_funnel.rejected_regime++;
-   else if(counter_name == "COST_RISK")
+   if(counter_name == "COST_RISK")
       g_funnel.rejected_cost_risk++;
    else if(counter_name == "SPREAD")
       g_funnel.rejected_spread++;
@@ -647,106 +471,12 @@ void CountRejection(const string counter_name,
    else
       return;
 
-   // Metricas segmentadas abrangem regime, custos, spread e stop.
-   // Kill time/weekend permanecem no funil global, sem contaminar a leitura
-   // de qualidade operacional de cada padrao/direcao.
-   IncrementPatternRejection(pattern_name, direction, counter_name);
-
    g_logger.Info(
       "COUNTER_REJECTION",
       _Symbol,
       signal_id,
       StringFormat("cause=%s detalhe=%s", counter_name, detail)
    );
-  }
-
-string FormatAuditValue(const double value,
-                        const int digits,
-                        const bool is_valid)
-  {
-   if(!is_valid || !MathIsValidNumber(value))
-      return "INVALID";
-
-   return DoubleToString(value, digits);
-  }
-
-bool EvaluateEMASlopeRegime(const MarketSnapshot &snapshot,
-                            const TechnicalSignal &signal,
-                            string &detail)
-  {
-   if(!InpUseEMASlopeFilter)
-     {
-      detail = "";
-      return true;
-     }
-
-   const double ema_40_now = snapshot.ema_40_signal;
-   const double atr = snapshot.atr_signal;
-   double ema_40_past = 0.0;
-   double slope = 0.0;
-   bool has_ema_40_past = false;
-   bool has_slope = false;
-   string reason = "";
-
-   const bool ema_40_now_valid = MathIsValidNumber(ema_40_now);
-   const bool atr_valid = MathIsValidNumber(atr) && atr > 0.0;
-
-   if(!ema_40_now_valid)
-      reason = "EMA40_now invalida";
-   else if(!atr_valid)
-      reason = "ATR invalido ou menor/igual a zero";
-   else
-     {
-      string slope_data_error = "";
-      if(!g_market_data.LoadEMA40PastValue(
-            InpEMASlopeLookback,
-            ema_40_past,
-            slope_data_error
-         ))
-        {
-         reason = slope_data_error;
-        }
-      else
-        {
-         has_ema_40_past = true;
-         const double denominator = (double)InpEMASlopeLookback * atr;
-         if(denominator <= 0.0 || !MathIsValidNumber(denominator))
-            reason = "Denominador do slope invalido";
-         else
-           {
-            slope = (ema_40_now - ema_40_past) / denominator;
-            has_slope = MathIsValidNumber(slope);
-
-            if(!has_slope)
-               reason = "Slope EMA40/ATR invalido";
-            else if(signal.direction == SIGNAL_BUY &&
-                    slope < InpMinEMA40SlopeATR)
-               reason = "Slope abaixo do minimo para BUY";
-            else if(signal.direction == SIGNAL_SELL &&
-                    slope > -InpMinEMA40SlopeATR)
-               reason = "Slope acima do maximo simetrico para SELL";
-            else if(signal.direction != SIGNAL_BUY &&
-                    signal.direction != SIGNAL_SELL)
-               reason = "Direcao invalida no filtro de regime";
-           }
-        }
-     }
-
-   detail = StringFormat(
-      "pattern=%s direction=%s EMA40_now=%s EMA40_past=%s ATR=%s "
-      "lookback=%d slope=%s minimum_slope=%.8f motivo=%s",
-      signal.pattern_name,
-      DirectionToString(signal.direction),
-      FormatAuditValue(ema_40_now, _Digits, ema_40_now_valid),
-      FormatAuditValue(ema_40_past, _Digits, has_ema_40_past),
-      FormatAuditValue(atr, _Digits, atr_valid),
-      InpEMASlopeLookback,
-      FormatAuditValue(slope, 10, has_slope),
-      InpMinEMA40SlopeATR,
-      reason == "" ? "ACCEPTED" : reason
-   );
-
-   return reason == "";
   }
 
 bool IsCostRiskRejectionMessage(const string message)
@@ -785,7 +515,6 @@ void CountPendingNotFilledIfApplicable(const string detail)
 
    g_trade_audit.pending_not_filled_counted = true;
    g_funnel.pending_not_filled++;
-   IncrementPatternPendingNotFilled(g_trade_audit.pattern_name, g_trade_audit.direction);
    g_logger.Info(
       "COUNTER_PENDING_NOT_FILLED",
       _Symbol,
@@ -831,21 +560,18 @@ void LogAuditSnapshot(const string event_name,
       _Symbol,
       g_trade_audit.signal_id,
       StringFormat(
-         "padrao=%s direcao=%s spread_sinal=%.2f spread_envio=%.2f spread_max_pendente=%.2f "
-         "technical_entry=%.*f normalized_entry=%.*f requested_price=%.*f executed_price=%.*f "
+         "padrao=%s spread_sinal=%.2f spread_envio=%.2f spread_max_pendente=%.2f "
+         "preco_solicitado=%.*f preco_normalizado=%.*f preco_executado=%.*f "
          "slippage=%.2fpts stop=%.2fpts custo_estimado=%.2f custo_realizado=%.2f "
          "risco_planejado=%.2f risco_real=%.2f cancel=%s detalhe=%s",
          g_trade_audit.pattern_name,
-         DirectionToString(g_trade_audit.direction),
          g_trade_audit.spread_signal_points,
          g_trade_audit.spread_send_points,
          g_trade_audit.spread_max_pending_points,
          _Digits,
-         g_trade_audit.technical_entry_price,
-         _Digits,
-         g_trade_audit.normalized_entry_price,
-         _Digits,
          g_trade_audit.requested_price,
+         _Digits,
+         g_trade_audit.normalized_price,
          _Digits,
          g_trade_audit.executed_price,
          g_trade_audit.slippage_points,
@@ -899,11 +625,11 @@ bool CancelPendingWithReason(const ENUM_EA_CANCEL_REASON reason,
       if(g_trade_audit.volume_executed <= 0.0)
         {
          if(reason == CANCEL_RISK && StringFind(detail, "custo/risco") >= 0)
-            CountRejection("COST_RISK", g_trade_audit.signal_id, detail, g_trade_audit.pattern_name, g_trade_audit.direction);
+            CountRejection("COST_RISK", g_trade_audit.signal_id, detail);
          else if(reason == CANCEL_KILL_TIME)
-            CountRejection("KILL_TIME", g_trade_audit.signal_id, detail, g_trade_audit.pattern_name, g_trade_audit.direction);
+            CountRejection("KILL_TIME", g_trade_audit.signal_id, detail);
          else if(reason == CANCEL_WEEKEND)
-            CountRejection("WEEKEND", g_trade_audit.signal_id, detail, g_trade_audit.pattern_name, g_trade_audit.direction);
+            CountRejection("WEEKEND", g_trade_audit.signal_id, detail);
          else if(reason == CANCEL_SPREAD)
            {
             // Se o spread absoluto excedeu o maximo, a causa principal e
@@ -926,16 +652,16 @@ bool CancelPendingWithReason(const ENUM_EA_CANCEL_REASON reason,
                   InpMaxSpreadPoints > 0.0 &&
                   current_spread_points > InpMaxSpreadPoints + 1e-9)
                  {
-                  CountRejection("SPREAD", g_trade_audit.signal_id, detail, g_trade_audit.pattern_name, g_trade_audit.direction);
+                  CountRejection("SPREAD", g_trade_audit.signal_id, detail);
                  }
                else
                  {
-                  CountRejection("STOP", g_trade_audit.signal_id, detail, g_trade_audit.pattern_name, g_trade_audit.direction);
+                  CountRejection("STOP", g_trade_audit.signal_id, detail);
                  }
               }
             else
               {
-               CountRejection("SPREAD", g_trade_audit.signal_id, detail, g_trade_audit.pattern_name, g_trade_audit.direction);
+               CountRejection("SPREAD", g_trade_audit.signal_id, detail);
               }
            }
         }
@@ -1332,8 +1058,6 @@ int OnInit(void)
      }
 
    ZeroMemory(g_funnel);
-   for(int metric_index = 0; metric_index < 6; metric_index++)
-      ZeroMemory(g_pattern_metrics[metric_index]);
 
    g_logger.Info(
       "EA_INITIALIZED",
@@ -1341,8 +1065,8 @@ int OnInit(void)
       "",
       StringFormat(
          "estado=%d magic=%I64u timeframe=%s alvo=%.2fR max_spread=%.2f stop_spread=%.2fx "
-         "min_stop_abs=%.2f ATR=%d x %.2f slope_filter=%s slope_lookback=%d slope_min=%.8f "
-         "max_custo_risco=%.2f%% max_lote=%.2f tolerancia_risco_real=%.2f%% watchdog=%ds",
+         "min_stop_abs=%.2f ATR=%d x %.2f max_custo_risco=%.2f%% max_lote=%.2f "
+         "tolerancia_risco_real=%.2f%% watchdog=%ds",
          (int)g_ea_state,
          InpMagicNumber,
          EnumToString((ENUM_TIMEFRAMES)_Period),
@@ -1352,9 +1076,6 @@ int OnInit(void)
          InpMinStopPointsAbsolute,
          InpATRPeriod,
          InpMinStopATRMultiple,
-         InpUseEMASlopeFilter ? "ON" : "OFF",
-         InpEMASlopeLookback,
-         InpMinEMA40SlopeATR,
          InpMaxRoundTripCostRiskPercent,
          InpMaxVolumeLots,
          InpMaxRealRiskOverPlanPercent,
@@ -1368,7 +1089,6 @@ int OnInit(void)
 void OnDeinit(const int reason)
   {
    LogFunnelSummary("FUNNEL_SUMMARY_FINAL");
-   LogPatternMetricsSummary("PATTERN_DIRECTION_SUMMARY_FINAL");
 
    EventKillTimer();
    ReleaseVisualIndicator();
@@ -1408,65 +1128,21 @@ void ProcessIdleState(void)
       return;
      }
 
-   TechnicalSignal signal = {};
+   TradePlan plan = {};
    string strategy_error = "";
 
-   if(!g_strategy.DetectSignal(snapshot, signal, strategy_error))
+   if(!g_strategy.Evaluate(snapshot, plan, strategy_error))
      {
       if(strategy_error != "")
          g_logger.Warning("SIGNAL_REJECTED", _Symbol, "", strategy_error);
       return;
      }
 
-   if(signal.signal_id == g_last_processed_signal_id)
+   if(plan.signal_id == g_last_processed_signal_id)
       return;
 
-   g_last_processed_signal_id = signal.signal_id;
-   CountSignalDetected(signal.signal_id, signal.pattern_name, signal.direction);
-
-   // Filtro de regime atua depois do sinal tecnico ser contado e antes da
-   // construcao do TradePlan. Nao altera entry, stop ou target.
-   string regime_detail = "";
-   if(!EvaluateEMASlopeRegime(snapshot, signal, regime_detail))
-     {
-      CountRejection(
-         "REGIME",
-         signal.signal_id,
-         regime_detail,
-         signal.pattern_name,
-         signal.direction
-      );
-      g_logger.Info(
-         "SIGNAL_REJECTED_REGIME",
-         _Symbol,
-         signal.signal_id,
-         regime_detail
-      );
-      return;
-     }
-
-   if(InpUseEMASlopeFilter)
-     {
-      g_logger.Info(
-         "REGIME_FILTER_PASSED",
-         _Symbol,
-         signal.signal_id,
-         regime_detail
-      );
-     }
-
-   TradePlan plan = {};
-   string plan_error = "";
-   if(!g_strategy.BuildTradePlan(snapshot, signal, plan, plan_error))
-     {
-      g_logger.Warning(
-         "SIGNAL_REJECTED",
-         _Symbol,
-         signal.signal_id,
-         plan_error
-      );
-      return;
-     }
+   g_last_processed_signal_id = plan.signal_id;
+   CountSignalDetected(plan.signal_id);
 
    string schedule_reason = "";
    const datetime server_time = GetBrokerServerTime();
@@ -1474,7 +1150,7 @@ void ProcessIdleState(void)
    string weekend_reason = "";
    if(g_trading_schedule.IsWeekendBlocked(server_time, weekend_reason))
      {
-      CountRejection("WEEKEND", plan.signal_id, weekend_reason, plan.pattern_name, plan.direction);
+      CountRejection("WEEKEND", plan.signal_id, weekend_reason);
       g_logger.Info("ENTRY_BLOCKED_BY_TIME", _Symbol, plan.signal_id, weekend_reason);
       return;
      }
@@ -1482,7 +1158,7 @@ void ProcessIdleState(void)
    string kill_reason = "";
    if(g_trading_schedule.IsKillTime(server_time, kill_reason))
      {
-      CountRejection("KILL_TIME", plan.signal_id, kill_reason, plan.pattern_name, plan.direction);
+      CountRejection("KILL_TIME", plan.signal_id, kill_reason);
       g_logger.Info("ENTRY_BLOCKED_BY_TIME", _Symbol, plan.signal_id, kill_reason);
       return;
      }
@@ -1520,9 +1196,9 @@ void ProcessIdleState(void)
    if(!g_execution_manager.Prepare(plan, prepared, preparation_result))
      {
       if(IsSpreadRejectionMessage(preparation_result.message))
-         CountRejection("SPREAD", plan.signal_id, preparation_result.message, plan.pattern_name, plan.direction);
+         CountRejection("SPREAD", plan.signal_id, preparation_result.message);
       else if(IsStopRejectionMessage(preparation_result.message))
-         CountRejection("STOP", plan.signal_id, preparation_result.message, plan.pattern_name, plan.direction);
+         CountRejection("STOP", plan.signal_id, preparation_result.message);
 
       g_logger.Warning(
          "ORDER_PREPARATION_REJECTED",
@@ -1539,9 +1215,9 @@ void ProcessIdleState(void)
    if(!g_execution_manager.RefreshSendSpread(prepared, send_spread_result))
      {
       if(IsSpreadRejectionMessage(send_spread_result.message))
-         CountRejection("SPREAD", plan.signal_id, send_spread_result.message, plan.pattern_name, plan.direction);
+         CountRejection("SPREAD", plan.signal_id, send_spread_result.message);
       else if(IsStopRejectionMessage(send_spread_result.message))
-         CountRejection("STOP", plan.signal_id, send_spread_result.message, plan.pattern_name, plan.direction);
+         CountRejection("STOP", plan.signal_id, send_spread_result.message);
 
       g_logger.Warning(
          "ORDER_PREPARATION_REJECTED",
@@ -1561,7 +1237,7 @@ void ProcessIdleState(void)
       ))
      {
       if(IsCostRiskRejectionMessage(risk_result.message))
-         CountRejection("COST_RISK", plan.signal_id, risk_result.message, plan.pattern_name, plan.direction);
+         CountRejection("COST_RISK", plan.signal_id, risk_result.message);
 
       g_logger.Warning(
          "RISK_REJECTED",
@@ -1602,9 +1278,8 @@ void ProcessIdleState(void)
    g_trade_audit.spread_signal_points      = plan.signal_spread_points;
    g_trade_audit.spread_send_points        = prepared.send_spread_points;
    g_trade_audit.spread_max_pending_points = prepared.send_spread_points;
-   g_trade_audit.technical_entry_price     = plan.technical_entry_price;
-   g_trade_audit.normalized_entry_price    = prepared.submitted_entry_price;
-   g_trade_audit.requested_price           = prepared.submitted_entry_price;
+   g_trade_audit.requested_price           = plan.technical_entry_price;
+   g_trade_audit.normalized_price          = prepared.submitted_entry_price;
    g_trade_audit.stop_price                = prepared.submitted_stop_price;
    g_trade_audit.target_price              = prepared.submitted_target_price;
    g_trade_audit.stop_points               = prepared.stop_points;
@@ -1624,9 +1299,9 @@ void ProcessIdleState(void)
       ))
      {
       if(IsSpreadRejectionMessage(execution_result.message))
-         CountRejection("SPREAD", plan.signal_id, execution_result.message, plan.pattern_name, plan.direction);
+         CountRejection("SPREAD", plan.signal_id, execution_result.message);
       else if(IsStopRejectionMessage(execution_result.message))
-         CountRejection("STOP", plan.signal_id, execution_result.message, plan.pattern_name, plan.direction);
+         CountRejection("STOP", plan.signal_id, execution_result.message);
 
       g_logger.Error(
          "ORDER_REJECTED",
@@ -1640,11 +1315,6 @@ void ProcessIdleState(void)
       ReconcileState();
       return;
      }
-
-   // Captura o preco efetivamente colocado em MqlTradeRequest.price.
-   // Para uma ordem pendente ele normalmente coincide com normalized_entry,
-   // mas os campos permanecem separados para detectar futuras divergencias.
-   g_trade_audit.requested_price = execution_result.requested_price;
 
    g_ea_state = EA_STATE_ORDER_PENDING;
    g_pending_order_ticket = execution_result.order_ticket;
@@ -1663,7 +1333,7 @@ void ProcessIdleState(void)
          "ticket=%I64u volume=%.8f spread_sinal=%.2f spread_envio=%.2f "
          "stop=%.2fpts min_stop=%.2fpts custo=%.2f custo/risco=%.2f%% "
          "risco_planejado=%.2f alvo=%.2fR alvo_bruto=%.2f "
-         "technical_entry=%.*f normalized_entry=%.*f requested_price=%.*f SL=%.*f TP=%.*f",
+         "preco_solicitado=%.*f preco_normalizado=%.*f SL=%.*f TP=%.*f",
          execution_result.order_ticket,
          risk_result.volume,
          plan.signal_spread_points,
@@ -1679,8 +1349,6 @@ void ProcessIdleState(void)
          plan.technical_entry_price,
          _Digits,
          g_active_prepared.submitted_entry_price,
-         _Digits,
-         execution_result.requested_price,
          _Digits,
          g_active_prepared.submitted_stop_price,
          _Digits,
@@ -1802,22 +1470,12 @@ void ProcessDealAudit(const MqlTradeTransaction &transaction)
 
    g_trade_audit.realized_commission_fee += ExplicitDealCost(transaction.deal);
 
-   // Resultado liquido do ciclo da operacao: lucro do deal + custos/swap
-   // assinados reportados pelo servidor. E acumulado inclusive em reducoes
-   // parciais e finalizado somente quando a posicao deixa de existir.
-   g_trade_audit.trade_net_profit +=
-      HistoryDealGetDouble(transaction.deal, DEAL_PROFIT) +
-      HistoryDealGetDouble(transaction.deal, DEAL_COMMISSION) +
-      HistoryDealGetDouble(transaction.deal, DEAL_FEE) +
-      HistoryDealGetDouble(transaction.deal, DEAL_SWAP);
-
    if(deal_entry == DEAL_ENTRY_IN || deal_entry == DEAL_ENTRY_INOUT)
      {
       if(!g_trade_audit.execution_counted)
         {
          g_trade_audit.execution_counted = true;
          g_funnel.executed++;
-         IncrementPatternExecuted(g_trade_audit.pattern_name, g_trade_audit.direction);
          g_logger.Info(
             "COUNTER_EXECUTED",
             _Symbol,
@@ -1876,7 +1534,7 @@ void ProcessDealAudit(const MqlTradeTransaction &transaction)
       if(g_risk_manager.CalculateActualSlippageCost(
             _Symbol,
             g_trade_audit.direction,
-            g_trade_audit.normalized_entry_price,
+            g_trade_audit.normalized_price,
             g_trade_audit.executed_price,
             g_trade_audit.volume_executed,
             slippage_cost,
@@ -1898,17 +1556,9 @@ void ProcessDealAudit(const MqlTradeTransaction &transaction)
          _Symbol,
          g_trade_audit.signal_id,
          StringFormat(
-            "bucket=%s deal=%I64u volume=%.8f technical_entry=%.*f normalized_entry=%.*f "
-            "requested_price=%.*f executed_price=%.*f spread_fill=%.2fpts slippage=%.2fpts custo_realizado_parcial=%.2f",
-            PatternMetricLabel(GetPatternMetricIndex(g_trade_audit.pattern_name, g_trade_audit.direction)),
+            "deal=%I64u volume=%.8f preco=%.*f spread_fill=%.2fpts slippage=%.2fpts custo_realizado_parcial=%.2f",
             transaction.deal,
             deal_volume,
-            _Digits,
-            g_trade_audit.technical_entry_price,
-            _Digits,
-            g_trade_audit.normalized_entry_price,
-            _Digits,
-            g_trade_audit.requested_price,
             _Digits,
             deal_price,
             g_trade_audit.spread_fill_points,
@@ -2045,7 +1695,7 @@ void ProcessRealRiskAfterFill(void)
          _Digits,
          g_trade_audit.requested_price,
          _Digits,
-         g_trade_audit.normalized_entry_price,
+         g_trade_audit.normalized_price,
          _Digits,
          open_price,
          g_trade_audit.slippage_points,
@@ -2162,76 +1812,6 @@ void OnTimer(void)
      }
   }
 
-//====================================================================
-// Criterio customizado de otimizacao
-//
-// Prioridades:
-// 1) amostra minima de trades;
-// 2) Profit Factor;
-// 3) Recovery Factor;
-// 4) Sharpe Ratio;
-// 5) penalidade por drawdown de equity.
-//
-// Nao usa lucro bruto como criterio principal. Valores extremos sao limitados
-// para evitar que PF=DBL_MAX (sem perdas) domine uma amostra pequena.
-//====================================================================
-double OnTester(void)
-  {
-   const double trades = TesterStatistics(STAT_TRADES);
-   const double profit = TesterStatistics(STAT_PROFIT);
-   double profit_factor = TesterStatistics(STAT_PROFIT_FACTOR);
-   double recovery_factor = TesterStatistics(STAT_RECOVERY_FACTOR);
-   double sharpe_ratio = TesterStatistics(STAT_SHARPE_RATIO);
-   double drawdown_percent = TesterStatistics(STAT_EQUITY_DDREL_PERCENT);
-
-   if(!MathIsValidNumber(trades) || trades < 0.0)
-      return -1.0e12;
-
-   // Configuracoes com amostra insuficiente ficam abaixo de qualquer passe
-   // robusto. O pequeno componente de trades apenas ordena os rejeitados.
-   if(InpOptimizationMinTrades > 0 && trades < (double)InpOptimizationMinTrades)
-      return -1.0e9 + trades;
-
-   if(!MathIsValidNumber(profit_factor) || profit_factor < 0.0)
-      profit_factor = 0.0;
-   if(!MathIsValidNumber(recovery_factor))
-      recovery_factor = 0.0;
-   if(!MathIsValidNumber(sharpe_ratio))
-      sharpe_ratio = 0.0;
-   if(!MathIsValidNumber(drawdown_percent) || drawdown_percent < 0.0)
-      drawdown_percent = 100.0;
-
-   // Caps tornam o criterio estavel diante de divisao por zero/valores
-   // estatisticamente extremos em amostras pequenas.
-   profit_factor   = MathMin(profit_factor, 10.0);
-   recovery_factor = MathMax(-10.0, MathMin(recovery_factor, 10.0));
-   sharpe_ratio    = MathMax(-5.0, MathMin(sharpe_ratio, 5.0));
-   drawdown_percent = MathMin(drawdown_percent, 100.0);
-
-   const double trade_sample_score = MathLog(1.0 + trades) * 5.0;
-
-   double score =
-      profit_factor * 35.0 +
-      recovery_factor * 25.0 +
-      sharpe_ratio * 20.0 +
-      trade_sample_score -
-      drawdown_percent * 2.0;
-
-   // Lucro liquido negativo nao deve vencer apenas por ratios isolados.
-   if(profit <= 0.0)
-      score -= 200.0;
-
-   // Drawdown acima do limite recebe penalidade adicional progressiva.
-   if(InpOptimizationMaxDrawdownPercent > 0.0 &&
-      drawdown_percent > InpOptimizationMaxDrawdownPercent)
-     {
-      score -=
-         (drawdown_percent - InpOptimizationMaxDrawdownPercent) * 10.0;
-     }
-
-   return score;
-  }
-
 void OnTradeTransaction(const MqlTradeTransaction &transaction,
                         const MqlTradeRequest &request,
                         const MqlTradeResult &result)
@@ -2253,26 +1833,9 @@ void OnTradeTransaction(const MqlTradeTransaction &transaction,
       g_trade_audit.executed_price > 0.0 &&
       g_ea_state == EA_STATE_IDLE)
      {
-      FinalizePatternTradeResult(
-         g_trade_audit.pattern_name,
-         g_trade_audit.direction,
-         g_trade_audit.trade_net_profit
-      );
-
-      g_logger.Info(
-         "PATTERN_TRADE_RESULT",
-         _Symbol,
-         g_trade_audit.signal_id,
-         StringFormat(
-            "bucket=%s net_profit=%.2f",
-            PatternMetricLabel(GetPatternMetricIndex(g_trade_audit.pattern_name, g_trade_audit.direction)),
-            g_trade_audit.trade_net_profit
-         )
-      );
-
       LogAuditSnapshot(
          "SIGNAL_AUDIT_FINAL",
-         "Operacao encerrada; resultado liquido e custos consolidados pelos deals observados."
+         "Operacao encerrada; custos realizados consolidados pelos deals observados."
       );
       ResetActiveContext();
      }
