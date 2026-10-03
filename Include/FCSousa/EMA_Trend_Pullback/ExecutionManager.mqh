@@ -272,7 +272,10 @@ public:
          return false;
       }
 
-      if(check.retcode != TRADE_RETCODE_DONE)
+      // No Strategy Tester, uma validacao bem-sucedida pode retornar
+      // OrderCheck=true com retcode=0. Retcodes nao nulos continuam sendo
+      // tratados como rejeicao, exceto o sucesso explicito do servidor.
+      if(check.retcode != 0 && check.retcode != TRADE_RETCODE_DONE)
       {
          result.retcode = check.retcode;
          result.message =
